@@ -141,6 +141,21 @@ jobs:
           fi
           ls -lh ${DEVICE}-${V}-*.zip*
 
+      - name: Verify patched OTAs against our keys (gate before publish)
+        if: steps.check.outputs.skip != 'true'
+        env:
+          PASSPHRASE_AVB: ${{ secrets.PASSPHRASE_AVB }}
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          # Derive our AVB public key (the same blob flashed as avb_custom_key).
+          ./avbroot key encode-avb --key avb.key --pass-env-var PASSPHRASE_AVB --output avb_pkmd.bin
+          for z in ${DEVICE}-${V}-*.zip; do
+            echo "== verifying $z =="
+            ./avbroot ota verify --input "$z" --cert-ota ota.crt --public-key-avb avb_pkmd.bin
+          done
+          echo "all patched OTAs verified (trusted: our OTA cert + our AVB key)"
+
       - name: Publish OTA to a GitHub Release
         if: steps.check.outputs.skip != 'true'
         env:
