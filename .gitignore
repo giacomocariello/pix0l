@@ -1,0 +1,10 @@
+# Signing keys — NEVER commit. Root of trust for your device's verified boot.
+/keys/
+# Downloaded binaries / work artifacts
+/.tooling/
+*.zip
+*.zip.sig
+*.zip.csig
+*.apk
+*.img
+/site/

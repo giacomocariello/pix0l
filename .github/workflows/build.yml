@@ -1,0 +1,191 @@
+name: build
+
+# Fetch the latest GrapheneOS OTA for the target device, patch it with avbroot
+# (re-sign with our own AVB + OTA keys, optionally inject the pixincreate Magisk
+# fork), generate Custota metadata, publish the OTA to Releases and the metadata
+# to GitHub Pages. Runs on free CI; a locked bootloader with our custom key then
+# consumes these OTAs seamlessly.
+
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Rebuild even if this GrapheneOS version was already released"
+        type: boolean
+        default: false
+  schedule:
+    - cron: "0 6 * * *"   # daily: catch new GrapheneOS releases
+
+permissions:
+  contents: write   # create Releases
+  pages: write      # deploy Pages
+  id-token: write   # Pages OIDC
+
+concurrency:
+  group: build
+  cancel-in-progress: false
+
+env:
+  DEVICE: rango                # Pixel 10 Pro Fold
+  OTA_CHANNEL: stable
+  AVBROOT_VERSION: "3.34.1"
+  CUSTOTA_VERSION: "6.5"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve latest GrapheneOS version
+        id: ver
+        run: |
+          set -euo pipefail
+          V=$(curl -fsSL "https://releases.grapheneos.org/${DEVICE}-${OTA_CHANNEL}" | head -n1 | awk '{print $1}')
+          [ -n "$V" ] || { echo "could not resolve version"; exit 1; }
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "GrapheneOS $DEVICE $OTA_CHANNEL = $V"
+
+      - name: Skip if this version was already released
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ github.event.inputs.force }}
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          if [ "$FORCE" = "true" ]; then echo "skip=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if gh release view "$V" >/dev/null 2>&1; then
+            echo "Release $V already exists; nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download & verify avbroot + custota-tool
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          echo 'chenxiaolong ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDOe6/tBnO7xZhAWXRj3ApUYgn+XZ0wnQiXM8B7tPgv4' > trusted_keys
+          verify_dl() { # repo tag asset
+            curl -fsSL -O "https://github.com/$1/releases/download/$2/$3"
+            curl -fsSL -O "https://github.com/$1/releases/download/$2/$3.sig"
+            ssh-keygen -Y verify -f trusted_keys -I chenxiaolong -n file -s "$3.sig" < "$3"
+            unzip -o -q "$3"
+          }
+          verify_dl chenxiaolong/avbroot "v${AVBROOT_VERSION}" "avbroot-${AVBROOT_VERSION}-x86_64-unknown-linux-gnu.zip"
+          verify_dl chenxiaolong/Custota "v${CUSTOTA_VERSION}" "custota-tool-${CUSTOTA_VERSION}-x86_64-unknown-linux-gnu.zip"
+          chmod +x avbroot custota-tool
+          ./avbroot --version && ./custota-tool --version
+
+      - name: Download GrapheneOS OTA
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          curl -fsSL -o "${DEVICE}-ota.zip" "https://releases.grapheneos.org/${DEVICE}-ota_update-${V}.zip"
+          ls -lh "${DEVICE}-ota.zip"
+
+      - name: Restore signing keys from secrets
+        if: steps.check.outputs.skip != 'true'
+        env:
+          KEY_AVB_BASE64: ${{ secrets.KEY_AVB_BASE64 }}
+          KEY_OTA_BASE64: ${{ secrets.KEY_OTA_BASE64 }}
+          CERT_OTA_BASE64: ${{ secrets.CERT_OTA_BASE64 }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$KEY_AVB_BASE64" | base64 -d > avb.key
+          printf '%s' "$KEY_OTA_BASE64" | base64 -d > ota.key
+          printf '%s' "$CERT_OTA_BASE64" | base64 -d > ota.crt
+          test -s avb.key && test -s ota.key && test -s ota.crt
+
+      - name: Download Magisk (pixincreate fork) if configured
+        if: steps.check.outputs.skip != 'true' && vars.MAGISK_PREINIT_DEVICE != ''
+        env:
+          MAGISK_SOURCE: ${{ vars.MAGISK_SOURCE || 'pixincreate/Magisk' }}
+          MAGISK_VERSION: ${{ vars.MAGISK_VERSION || 'v31.0-3' }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -o magisk.apk "https://github.com/${MAGISK_SOURCE}/releases/download/${MAGISK_VERSION}/Magisk-${MAGISK_VERSION}.apk"
+          ls -lh magisk.apk
+
+      - name: Patch OTA (rootless always; magisk if configured)
+        if: steps.check.outputs.skip != 'true'
+        env:
+          PASSPHRASE_AVB: ${{ secrets.PASSPHRASE_AVB }}
+          PASSPHRASE_OTA: ${{ secrets.PASSPHRASE_OTA }}
+          PREINIT: ${{ vars.MAGISK_PREINIT_DEVICE }}
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          patch() { # flavor extra-args...
+            local flavor="$1"; shift
+            local out="${DEVICE}-${V}-${flavor}.zip"
+            echo "== patching $flavor =="
+            ./avbroot ota patch \
+              --input "${DEVICE}-ota.zip" \
+              --output "$out" \
+              --key-avb avb.key --pass-avb-env-var PASSPHRASE_AVB \
+              --key-ota ota.key --pass-ota-env-var PASSPHRASE_OTA \
+              --cert-ota ota.crt \
+              "$@"
+            ./custota-tool gen-csig --input "$out" --key ota.key --cert ota.crt \
+              --passphrase-env-var PASSPHRASE_OTA
+          }
+          patch rootless --rootless
+          if [ -n "${PREINIT:-}" ]; then
+            patch magisk --magisk magisk.apk --magisk-preinit-device "$PREINIT"
+          fi
+          ls -lh ${DEVICE}-${V}-*.zip*
+
+      - name: Publish OTA to a GitHub Release
+        if: steps.check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          gh release create "$V" \
+            --title "$V" \
+            --notes "GrapheneOS ${DEVICE} ${V}, patched by pix0l (avbroot ${AVBROOT_VERSION})." \
+            ${DEVICE}-${V}-*.zip ${DEVICE}-${V}-*.zip.csig
+
+      - name: Generate Custota update-info for Pages
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          base="https://github.com/${{ github.repository }}/releases/download/${V}"
+          mkdir -p site
+          touch site/.nojekyll
+          if [ -f "${DEVICE}-${V}-magisk.zip" ]; then default=magisk; else default=rootless; fi
+          for flavor in rootless magisk; do
+            f="${DEVICE}-${V}-${flavor}.zip"
+            [ -f "$f" ] || continue
+            mkdir -p "site/${flavor}"
+            ./custota-tool gen-update-info \
+              --file "site/${flavor}/${DEVICE}.json" \
+              --location "${base}/${f}"
+          done
+          cp "site/${default}/${DEVICE}.json" "site/${DEVICE}.json"
+          echo "default flavor: $default"; find site -type f
+
+      - name: Upload Pages artifact
+        if: steps.check.outputs.skip != 'true'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./site
+
+      - name: Configure Pages
+        if: steps.check.outputs.skip != 'true'
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - name: Deploy to Pages
+        id: deploy
+        if: steps.check.outputs.skip != 'true'
+        uses: actions/deploy-pages@v4
