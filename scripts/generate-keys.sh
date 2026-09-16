@@ -10,7 +10,7 @@
 #   keys/avb.passphrase  keys/ota.passphrase
 set -euo pipefail
 cd "$(dirname "$0")/.."
-AVBROOT="${AVBROOT:-.tooling/avbroot}"
+AVBROOT="${AVBROOT:-avbroot}"   # from the flake dev shell (nix develop / direnv)
 mkdir -p keys
 [ -e keys/avb.key ] && { echo "keys/ already populated; refusing to overwrite"; exit 1; }
 
