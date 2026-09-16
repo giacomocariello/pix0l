@@ -20,6 +20,11 @@ adb reboot recovery          # in recovery: Apply update -> ADB
 adb sideload rango-<version>-rootless.zip
 ```
 
+## 2b. Boot and verify BEFORE locking (critical)
+Reboot into the patched OS and confirm it boots and works normally **while still
+unlocked**. Never relock an image you haven't seen boot — locking a bad image is the
+main way people brick. Only proceed once it's booted cleanly.
+
 ## 3. Install your AVB key and relock
 ```sh
 adb reboot bootloader
