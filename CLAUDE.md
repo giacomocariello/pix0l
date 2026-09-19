@@ -38,9 +38,9 @@ Use these from PATH — don't re-vendor binaries into the repo.
 
 ## Secrets & variables (already set)
 - Secrets: `KEY_AVB_BASE64`, `KEY_OTA_BASE64`, `CERT_OTA_BASE64`, `PASSPHRASE_AVB`, `PASSPHRASE_OTA`.
-- Variables: `MAGISK_SOURCE=pixincreate/Magisk`, `MAGISK_VERSION=v31.0-3`.
-- **Pending:** `MAGISK_PREINIT_DEVICE` — read off the device once (Magisk-patch `init_boot`
-  → `avbroot boot magisk-info`), then `gh variable set …`. Until set, only rootless builds.
+- Variables: `MAGISK_SOURCE=pixincreate/Magisk`, `MAGISK_VERSION=v31.0-3`,
+  `MAGISK_PREINIT_DEVICE=sda10` (read off `rango` via Magisk-patched `init_boot` →
+  `avbroot boot magisk-info`, set 2026-09-19). Builds now produce rootless **and** magisk.
 
 ## Keys = root of trust (critical)
 `keys/` (gitignored) holds `avb.key`, `ota.key`, `ota.crt`, `avb_pkmd.bin`, passphrases.
@@ -48,8 +48,10 @@ Use these from PATH — don't re-vendor binaries into the repo.
 `avb_pkmd.bin` is what gets flashed as `avb_custom_key` on the device.
 
 ## Device install
-See `docs/install.md`. Always: **keep OEM unlocking ENABLED** (only brick-recovery path),
-**boot the patched image before relocking**, and **sideload** OTAs (don't fastboot-flash them).
+See `docs/install.md`. Always: **keep OEM unlocking ENABLED** (only brick-recovery path) and
+**boot the patched image before relocking**. First install onto stock is via **fastboot**
+(`avbroot ota extract --fastboot` + `fastboot flashall`) — stock recovery rejects our OTA key;
+**sideload** works only for later updates once the running patched OS trusts our key.
 
 ## Conventions
 - Git commits: **one-line subject only** — no body, no `Co-Authored-By` trailer.
