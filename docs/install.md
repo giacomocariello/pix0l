@@ -13,8 +13,19 @@
 Follow <https://grapheneos.org/install/cli> to unlock the bootloader and flash the official
 `rango` factory image. Boot it once. (This ensures a known-good baseline + firmware.)
 
-## 2. Sideload the patched OTA
-avbroot OTAs are **sideloaded**, not fastboot-flashed (avoids "device corrupt").
+## 2. Install the patched OTA (first time = fastboot, NOT sideload)
+The **first** install onto stock GrapheneOS must go through fastboot. Stock recovery
+verifies OTA signatures against its `otacerts.zip`, which trusts only GrapheneOS's key, so
+it **rejects our self-signed OTA**. avbroot re-signs `vbmeta` and swaps `otacerts.zip` into
+system/recovery, so only **after** the patched OS is running does recovery trust our key —
+at which point `adb sideload` (and Custota) work for later updates.
+
+First install (bootloader unlocked, device in fastboot):
+```sh
+avbroot ota extract --input rango-<version>-rootless.zip --directory extracted --fastboot
+ANDROID_PRODUCT_OUT=extracted fastboot flashall --skip-reboot   # auto-hops to fastbootd
+```
+Later updates only (once running a patched build; may be done while locked):
 ```sh
 adb reboot recovery          # in recovery: Apply update -> ADB
 adb sideload rango-<version>-rootless.zip
@@ -35,15 +46,7 @@ fastboot flashing lock        # confirm on-device with volume/power
 On reboot you'll see the **yellow** verified-boot screen showing your key fingerprint —
 this is correct. Compare it against the `avb_pkmd.bin` SHA-256 you recorded.
 
-## 4. Custota (seamless OTAs while locked)
-- Install the Custota app (from the `Custota-<ver>-release.zip` on chenxiaolong/Custota).
-- Set the OTA server URL to the flavor you want:
-  - rootless: `https://giacomocariello.github.io/pix0l/rootless/`
-  - magisk:   `https://giacomocariello.github.io/pix0l/magisk/`
-  - (Custota appends `rango.json` automatically.)
-- Custota will now offer each new version as a seamless A/B update.
-
-## 5. Enable the Magisk flavor (one-time preinit discovery)
+## 4. Enable the Magisk flavor (one-time preinit discovery)
 The Magisk build needs a device-specific `preinit` partition. Read it off the device once:
 
 1. On the running device, install the **pixincreate Magisk** APK and use it to **patch the
@@ -57,7 +60,20 @@ The Magisk build needs a device-specific `preinit` partition. Read it off the de
    gh variable set MAGISK_PREINIT_DEVICE -R giacomocariello/pix0l -b "<name>"
    gh workflow run build.yml -R giacomocariello/pix0l -f force=true
    ```
-4. Point Custota at the `magisk/` URL; take the OTA; on next boot you're rooted + locked.
+4. Install the resulting `rango-<version>-magisk.zip`: sideload it from recovery (works now —
+   the running patched OS trusts our OTA key — and is fine while locked), or fastboot-flash
+   it as in step 2. On next boot you're rooted + locked.
+
+## 5. Custota (seamless OTAs while locked) — requires root, so do this AFTER step 4
+Custota is a **Magisk/KernelSU module** (no standalone APK); it needs root to talk to
+`update_engine`, so it only runs on the **magisk** flavor.
+- Install the `Custota-<ver>-release.zip` module in Magisk, reboot, then open Custota.
+- Set the OTA server URL: `https://giacomocariello.github.io/pix0l/magisk/`
+  (Custota appends `rango.json` automatically.)
+- Custota will then offer each new version as a seamless A/B update, even while locked.
+
+On the **rootless** flavor there is no Custota — update by manual recovery sideload (step 2,
+"later updates"), since stock's updater won't accept our self-signed OTAs either.
 
 ## Recovery (if a boot fails)
 - **Do NOT switch slots.** Reboot to bootloader.
